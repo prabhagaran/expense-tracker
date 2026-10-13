@@ -4,7 +4,11 @@ A small personal expense tracker. The page is hosted on GitHub Pages, and the da
 
 - **No financial data is in this repo.** The page is only code. Transactions are stored in a Google Sheet in your Drive, reached through a Google Apps Script web app that answers only when a request carries your secret key.
 - Works on a phone. You can install it to your home screen ("Add to Home screen").
-- Features: a dashboard (money in/out, net, balance, spending by category, daily spending, a 12-month trend), adding/editing/deleting entries, monthly budgets per category, CSV import (safe to re-run) and CSV export.
+- **Overview:** income, spending, net cash flow, savings rate and closing balance, each compared with the previous period; a 12-month cash-flow chart; spending by category against budget; top payees; recent transactions.
+- **Transactions:** a sortable, paged table with search, category and type filters, multi-select to recategorise or delete in bulk, and CSV export of the filtered view.
+- **Budgets:** monthly limits per category, with On track / At risk / Over status.
+- **Reporting periods:** a single month, last 3/6/12 months, year to date, or all time.
+- **Keyboard:** `n` new transaction, `/` search, `g o` / `g t` / `g b` to switch pages, `Esc` to close the editor.
 
 ## One-time setup (about 5 minutes)
 

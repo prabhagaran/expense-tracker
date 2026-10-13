@@ -43,6 +43,8 @@ function handle_(req) {
       case 'add':       return out_({ ok: true, tx: upsert_([req.tx])[0] });
       case 'update':    return out_({ ok: true, tx: upsert_([req.tx])[0] });
       case 'delete':    return out_({ ok: true, deleted: delete_(req.id) });
+      case 'updateMany':return out_({ ok: true, count: upsert_(req.txs || []).length });
+      case 'deleteMany':return out_({ ok: true, count: deleteMany_(req.ids || []) });
       case 'import':    return out_({ ok: true, added: importRows_(req.rows || []) });
       case 'budgets':   return out_({ ok: true, budgets: saveBudgets_(req.budgets || {}) });
       case 'ping':      return out_({ ok: true });
@@ -125,6 +127,14 @@ function delete_(id) {
   if (!row) return false;
   sh.deleteRow(row);
   return true;
+}
+
+function deleteMany_(ids) {
+  const sh = sheet_(TX_SHEET, TX_HEADERS);
+  const idx = idIndex_(sh);
+  const rows = ids.map(id => idx[String(id)]).filter(Boolean).sort((a, b) => b - a);
+  rows.forEach(r => sh.deleteRow(r));
+  return rows.length;
 }
 
 /** Bulk import; rows whose id already exists are skipped, so re-importing is safe. */
