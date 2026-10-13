@@ -117,7 +117,7 @@ function readTx_() {
 
 function rowToTx_(r) {
   const d = normDate_(r[1]);
-  return { id: String(r[0]), date: d, type: r[2], category: r[3], counterparty: r[4], amount: Number(r[5]), note: r[6], source: r[7] };
+  return { id: String(r[0]), date: d, type: String(r[2]), category: String(r[3]), counterparty: String(r[4]), amount: Number(r[5]), note: String(r[6]), source: String(r[7]) };
 }
 
 /** Accepts Date objects, yyyy-mm-dd, dd-mm-yyyy and dd/mm/yyyy; returns yyyy-MM-dd. */

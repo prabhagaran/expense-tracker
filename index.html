@@ -623,11 +623,16 @@ function initials(s){s=String(s||'?').replace(/[^A-Za-z0-9 ]/g,' ').trim();const
 const pill=c=>`<span class="pill ${c==='Uncategorised'?'unc':''}"><i style="background:${catColor(c)}"></i>${esc(c)}${trCats().includes(c)?'<span class="tr-mark" title="Transfer">⇄</span>':''}</span>`;
 const payee=(name,type)=>`<div class="pc"><span class="av ${type==='in'?'in':''}">${esc(initials(name))}</span><span class="nm" title="${esc(name)}">${esc(name||'—')}</span></div>`;
 
+/* Google Sheets turns text that looks like a number (e.g. a payee "934589815") into a number; coerce back. */
+const str=v=>v==null?'':String(v);
+const normTx=t=>({...t,id:str(t.id),date:normDate(t.date)||str(t.date),type:t.type==='in'?'in':'out',category:str(t.category)||'Uncategorised',
+  counterparty:str(t.counterparty),amount:Number(t.amount)||0,note:str(t.note),source:str(t.source)});
+
 /* ---------- state ---------- */
 const S={tx:LS.get('cache.tx',[]),budgets:LS.get('cache.budgets',{}),settings:LS.get('cache.settings',{}),conn:LS.get('conn',null),ob:LS.get('ob',null),
   page:'overview',period:{kind:LS.get('periodKind','month'),month:today().slice(0,7)},
   t:{q:'',cat:'',type:'',scope:'auto',sort:'date',dir:-1,page:0,size:50,sel:new Set()},editing:null,dType:'out'};
-S.tx=S.tx.map(t=>({...t,date:normDate(t.date)||t.date,amount:Number(t.amount)}));
+S.tx=(Array.isArray(S.tx)?S.tx:[]).map(normTx);if(!S.settings||typeof S.settings!=='object')S.settings={};
 
 /* ---------- periods ---------- */
 const KINDS=[['month','Month'],['q','Last 3 months'],['h','Last 6 months'],['y','Last 12 months'],['ytd','Year to date'],['all','All time']];
@@ -645,7 +650,8 @@ function range(p=S.period){ // [start, end) as yyyy-mm-dd, plus months count
 function prevRange(){const p=S.period;if(p.kind==='all'||p.kind==='ytd')return null;const r=range();return range({kind:p.kind,month:addMonth(p.month,-r.n)})}
 const inR=(t,r)=>t.date>=r.s&&t.date<r.e;
 const DEFAULT_TR=['Cash deposit'];
-const trCats=()=>S.settings.transferCats||DEFAULT_TR;
+const arr=v=>Array.isArray(v)?v:[];
+const trCats=()=>Array.isArray(S.settings.transferCats)?S.settings.transferCats.map(str):DEFAULT_TR;
 const isTr=t=>trCats().includes(t.category);
 const total=(l,ty)=>l.reduce((a,t)=>a+(t.type===ty&&!isTr(t)?t.amount:0),0);
 const trTotal=l=>l.reduce((a,t)=>a+(isTr(t)?t.amount:0),0);
@@ -685,8 +691,8 @@ async function sync(quiet){
   if(Q.n>0){Q.needSync=true;return}
   setConn('busy','Syncing…',lastSyncTxt||'Fetching from your sheet');const t0=performance.now();
   try{const j=await api('list');if(Q.n>0){Q.needSync=true;return}
-    S.tx=(j.transactions||[]).map(t=>({...t,date:normDate(t.date)||t.date,amount:Number(t.amount)}));S.budgets=j.budgets||{};
-    if(j.settings){S.settings=j.settings;LS.set('cache.settings',S.settings);if(!S.settings.ob&&S.ob)saveSettings({ob:S.ob})}
+    S.tx=(j.transactions||[]).map(normTx);S.budgets=j.budgets||{};
+    if(j.settings&&typeof j.settings==='object'){S.settings=j.settings;LS.set('cache.settings',S.settings);if(!S.settings.ob&&S.ob)saveSettings({ob:S.ob})}
     LS.set('cache.tx',S.tx);LS.set('cache.budgets',S.budgets);const at=new Date();LS.set('cache.at',at.getTime());
     lastSyncTxt=S.tx.length.toLocaleString('en-IN')+' entries · synced '+at.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})+' in '+((performance.now()-t0)/1000).toFixed(1)+' s'+(j.cached?' (cached)':'');connIdle();
     $('sLast').textContent=at.toLocaleString();renderAll();if(!quiet)toast('Synced '+S.tx.length+' entries');
@@ -724,8 +730,10 @@ $$('[data-page]').forEach(b=>b.onclick=()=>go(b.dataset.page));
 $$('[data-goto]').forEach(b=>b.onclick=()=>go(b.dataset.goto));
 
 /* ---------- render ---------- */
-function renderAll(){renderPeriodCtl();fillLists();renderPage()}
-function renderPage(){$('pageSub').textContent=PAGES[S.page][1]();
+function renderAll(){try{renderPeriodCtl();fillLists()}catch(e){console.error(e)}renderPage()}
+function renderPage(){try{renderPageInner()}catch(e){console.error(e);showRenderError(e)}}
+function showRenderError(e){const t=$('toast');toast('Something on this page failed to draw: '+(e&&e.message||e)+'. Your data is safe; try Sync.')}
+function renderPageInner(){$('pageSub').textContent=PAGES[S.page][1]();
   if(S.page==='overview')renderOverview();if(S.page==='transactions')renderTx();if(S.page==='budgets')renderBudgets();if(S.page==='settings')renderSettings();if(S.page==='import')renderImport();if(S.page==='bills')renderBills()}
 
 function delta(cur,prev,goodUp){
@@ -991,7 +999,7 @@ function detectBills(){
   return out.sort((a,b)=>a.day-b.day)}
 function detectSalary(){const since=addMonth(today().slice(0,7),-6)+'-01';const l=S.tx.filter(t=>t.type==='in'&&t.category==='Salary'&&t.date>=since);
   if(l.length<2)return null;return{day:Math.round(median(l.map(t=>+t.date.slice(8,10)))),amount:median(l.map(t=>t.amount)),last:l.reduce((a,t)=>t.date>a?t.date:a,'')}}
-function activeBills(){const ign=new Set(S.settings.billIgnore||[]);return detectBills().filter(b=>!ign.has(b.key)).concat((S.settings.bills||[]).map(b=>({...b,auto:false})))}
+function activeBills(){const ign=new Set(arr(S.settings.billIgnore));return detectBills().filter(b=>!ign.has(b.key)).concat(arr(S.settings.bills).map(b=>({...b,auto:false})))}
 function paidThisMonth(b,month){return S.tx.some(t=>t.type==='out'&&t.date.startsWith(month)&&Math.abs(t.amount-b.amount)<=b.amount*.2&&
   ((t.counterparty||'').toUpperCase()===String(b.name).toUpperCase()||(!b.auto&&(t.counterparty||'').toUpperCase().includes(String(b.name).toUpperCase().slice(0,6)))))}
 function upcoming(horizon){
@@ -1040,20 +1048,20 @@ function renderForecast(box,opt){
 }
 function renderBills(){
   renderForecast($('billsFc'),{until:'all'});
-  const ign=new Set(S.settings.billIgnore||[]);const auto=detectBills();
+  const ign=new Set(arr(S.settings.billIgnore));const auto=detectBills();
   $('autoBills').innerHTML=auto.length?auto.map(b=>`<tr><td>${payee(b.name,'out')}</td><td class="hide-m">${pill(b.category)}</td><td class="r num amt">${inr(b.amount)}</td><td class="r num">${b.day}</td><td class="hide-m num">${fmtDate(b.last)}</td>
     <td><input type="checkbox" class="tgl" data-bk="${esc(b.key)}" ${ign.has(b.key)?'':'checked'} aria-label="Track ${esc(b.name)}"></td></tr>`).join('')
     :'<tr><td colspan="6"><div class="empty"><b>No regular payments found yet</b>They appear once the same payee and amount show up in 3 different months.</div></td></tr>';
-  $$('[data-bk]').forEach(cb=>cb.onchange=async()=>{const s=new Set(S.settings.billIgnore||[]);cb.checked?s.delete(cb.dataset.bk):s.add(cb.dataset.bk);await saveSettings({billIgnore:[...s]});renderBills()});
-  const man=S.settings.bills||[];
+  $$('[data-bk]').forEach(cb=>cb.onchange=async()=>{const s=new Set(arr(S.settings.billIgnore));cb.checked?s.delete(cb.dataset.bk):s.add(cb.dataset.bk);await saveSettings({billIgnore:[...s]});renderBills()});
+  const man=arr(S.settings.bills);
   $('manBills').innerHTML=man.length?man.map(b=>`<tr><td>${payee(b.name,'out')}</td><td class="hide-m">${pill(b.category||'Bills')}</td><td class="r num amt">${inr(b.amount)}</td><td class="r num">${b.day}</td><td class="r"><button class="btn sm danger" data-bdel="${esc(b.id)}">Remove</button></td></tr>`).join('')
     :'<tr><td colspan="5"><div class="empty" style="padding:20px"><b>No bills added</b>Add EMIs and fixed payments below so they appear in the forecast before they hit your history.</div></td></tr>';
-  $$('[data-bdel]').forEach(b=>b.onclick=async()=>{const old=S.settings.bills||[];await saveSettings({bills:old.filter(x=>x.id!==b.dataset.bdel)});renderBills();
+  $$('[data-bdel]').forEach(b=>b.onclick=async()=>{const old=arr(S.settings.bills);await saveSettings({bills:old.filter(x=>x.id!==b.dataset.bdel)});renderBills();
     toast('Bill removed',{label:'Undo',fn:async()=>{await saveSettings({bills:old});renderBills()}})});
 }
 $('bAdd').onclick=async()=>{const name=$('bName').value.trim(),amount=parseFloat($('bAmt').value),day=parseInt($('bDay').value,10),category=$('bCat').value.trim()||'Bills';
   if(!name){toast('Give the bill a name');return}if(!(amount>0)){toast('Enter the amount');return}if(!(day>=1&&day<=31)){toast('Due day must be 1 to 31');return}
-  await saveSettings({bills:(S.settings.bills||[]).concat([{id:'b-'+Date.now().toString(36),name,amount,day,category}])});
+  await saveSettings({bills:arr(S.settings.bills).concat([{id:'b-'+Date.now().toString(36),name,amount,day,category}])});
   ['bName','bAmt','bDay','bCat'].forEach(id=>$(id).value='');renderBills();toast(`${name} added`)};
 
 /* ---------- statement import ---------- */
