@@ -294,9 +294,9 @@ function setSync(state,txt){$('dot').className='dot '+state;$('syncTxt').textCon
 async function sync(){
   if(!S.conn){setSync('','Not connected');return}
   setSync('busy','Syncing…');
-  try{const j=await api('list');S.tx=j.transactions;S.budgets=j.budgets||{};
+  try{const j=await api('list');S.tx=(j.transactions||[]).map(t=>({...t,date:normDate(t.date)||t.date,amount:Number(t.amount)}));S.budgets=j.budgets||{};
       LS.set('cache.tx',S.tx);LS.set('cache.budgets',S.budgets);LS.set('cache.at',Date.now());
-      setSync('ok','Synced '+new Date().toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}));render();}
+      setSync('ok',S.tx.length+' entries · synced '+new Date().toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}));if(!S.tx.some(t=>inMonth(t,S.month))&&S.tx.length){S.month=S.tx.map(t=>t.date).sort().pop().slice(0,7)}render();}
   catch(e){setSync('err',e.message.includes('Unauthorized')?'Wrong key':'Offline · showing cached');toast(e.message);render()}
 }
 
@@ -482,18 +482,22 @@ function parseCSV(text){const rows=[];let row=[],f='',q=false;
     else f+=c}
   if(f!==''||row.length){row.push(f);rows.push(row)}return rows.filter(r=>r.some(x=>x!==''))}
 let pending=null;
+function normDate(s){s=String(s||'').trim();let m;
+  if((m=s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/)))return m[1]+'-'+m[2].padStart(2,'0')+'-'+m[3].padStart(2,'0');
+  if((m=s.match(/^(\d{1,2})[-\/.](\d{1,2})[-\/.](\d{2,4})$/))){const y=m[3].length===2?'20'+m[3]:m[3];return y+'-'+m[2].padStart(2,'0')+'-'+m[1].padStart(2,'0')}
+  return ''}
 $('impFile').onchange=async()=>{
   const f=$('impFile').files[0];pending=null;$('impBtn').disabled=true;if(!f)return;
   const rows=parseCSV(await f.text());const h=rows.shift().map(x=>x.trim().toLowerCase());
   const need=['id','date','type','category','amount'];const miss=need.filter(n=>!h.includes(n));
   if(miss.length){$('impMsg').textContent='Missing columns: '+miss.join(', ');return}
   const ix=n=>h.indexOf(n);
-  pending=rows.map(r=>({id:r[ix('id')],date:r[ix('date')],type:r[ix('type')]==='in'?'in':'out',category:r[ix('category')],
-    counterparty:ix('counterparty')>=0?r[ix('counterparty')]:'',amount:parseFloat(r[ix('amount')]),
+  pending=rows.map(r=>({id:r[ix('id')],date:normDate(r[ix('date')]),type:r[ix('type')]==='in'?'in':'out',category:r[ix('category')],
+    counterparty:ix('counterparty')>=0?r[ix('counterparty')]:'',amount:parseFloat(String(r[ix('amount')]).replace(/[,₹\s]/g,'')),
     note:ix('note')>=0?r[ix('note')]:'',source:ix('source')>=0?r[ix('source')]:'import'}))
     .filter(t=>t.id&&/^\d{4}-\d{2}-\d{2}$/.test(t.date)&&t.amount>0);
   const have=new Set(S.tx.map(t=>t.id));const fresh=pending.filter(t=>!have.has(t.id)).length;
-  $('impMsg').textContent=`${pending.length} rows read · ${fresh} new`;$('impBtn').disabled=!fresh;
+  $('impMsg').textContent=`${rows.length} rows in file · ${pending.length} valid · ${fresh} new`+(pending.length<rows.length?` · ${rows.length-pending.length} skipped (bad date or amount)`:'');$('impBtn').disabled=!fresh;
 };
 $('impBtn').onclick=async()=>{
   if(!pending)return;$('impBtn').disabled=true;$('impMsg').textContent='Importing…';

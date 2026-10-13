@@ -79,12 +79,23 @@ function readTx_() {
 }
 
 function rowToTx_(r) {
-  const d = r[1] instanceof Date ? Utilities.formatDate(r[1], Session.getScriptTimeZone(), 'yyyy-MM-dd') : String(r[1]);
+  const d = normDate_(r[1]);
   return { id: String(r[0]), date: d, type: r[2], category: r[3], counterparty: r[4], amount: Number(r[5]), note: r[6], source: r[7] };
 }
 
+/** Accepts Date objects, yyyy-mm-dd, dd-mm-yyyy and dd/mm/yyyy; returns yyyy-MM-dd. */
+function normDate_(v) {
+  if (v instanceof Date) return Utilities.formatDate(v, Session.getScriptTimeZone(), 'yyyy-MM-dd');
+  const s = String(v || '').trim().replace(/^'/, '');
+  let m = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
+  if (m) return m[1] + '-' + ('0' + m[2]).slice(-2) + '-' + ('0' + m[3]).slice(-2);
+  m = s.match(/^(\d{1,2})[-\/.](\d{1,2})[-\/.](\d{2,4})$/);
+  if (m) return (m[3].length === 2 ? '20' + m[3] : m[3]) + '-' + ('0' + m[2]).slice(-2) + '-' + ('0' + m[1]).slice(-2);
+  return s;
+}
+
 function txToRow_(t) {
-  return [t.id, t.date, t.type === 'in' ? 'in' : 'out', t.category || 'Uncategorised', t.counterparty || '', Number(t.amount) || 0, t.note || '', t.source || 'manual', new Date()];
+  return [t.id, "'" + normDate_(t.date), t.type === 'in' ? 'in' : 'out', t.category || 'Uncategorised', t.counterparty || '', Number(t.amount) || 0, t.note || '', t.source || 'manual', new Date()];
 }
 
 function idIndex_(sh) {
