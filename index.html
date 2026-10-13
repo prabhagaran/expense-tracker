@@ -312,6 +312,7 @@ input[type=checkbox]{width:15px;height:15px;accent-color:var(--ink);cursor:point
     <main class="content">
       <!-- OVERVIEW -->
       <section data-view="overview">
+        <div class="note" id="emptyNote" hidden style="margin-bottom:16px"></div>
         <div class="kpis" id="kpis"></div>
         <div class="panel" style="margin-bottom:16px">
           <div class="panel-h"><h2>Cash flow</h2><span class="hint" id="cfHint">Last 12 months · click a month to open it</span>
@@ -340,6 +341,7 @@ input[type=checkbox]{width:15px;height:15px;accent-color:var(--ink);cursor:point
           <div class="toolbar">
             <div class="search"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="7" cy="7" r="5"/><path d="M11 11l3.5 3.5"/></svg><input id="tq" placeholder="Search payee or note" aria-label="Search"></div>
             <select id="tCat" aria-label="Category"><option value="">All categories</option></select>
+            <div class="seg" id="tScope" role="group" aria-label="Date range"><button data-v="period" aria-pressed="true" id="tScopeP">This period</button><button data-v="all" aria-pressed="false">All dates</button></div>
             <div class="seg" id="tType" role="group" aria-label="Type"><button data-v="" aria-pressed="true">All</button><button data-v="out" aria-pressed="false">Spending</button><button data-v="in" aria-pressed="false">Income</button></div>
             <span class="spacer"></span>
             <button class="btn" id="expFiltered"><svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M8 2v8M4.5 6.5L8 10l3.5-3.5M2.5 13.5h11"/></svg>Export</button>
@@ -350,6 +352,7 @@ input[type=checkbox]{width:15px;height:15px;accent-color:var(--ink);cursor:point
             <select id="bulkCat"></select>
             <button class="btn sm" id="bulkApply">Apply</button>
             <button class="btn sm danger" id="bulkDel">Delete</button>
+            <button class="linkbtn" id="bulkAll" hidden></button>
             <button class="linkbtn" id="bulkClear">Clear selection</button>
           </div>
           <div class="tbl-wrap" style="max-height:calc(100vh - 290px)">
@@ -472,8 +475,8 @@ function normDate(s){s=String(s||'').trim().replace(/^'/,'');let m;
 
 /* ---------- state ---------- */
 const S={tx:LS.get('cache.tx',[]),budgets:LS.get('cache.budgets',{}),conn:LS.get('conn',null),ob:LS.get('ob',null),
-  page:'overview',period:LS.get('period',{kind:'month',month:today().slice(0,7)}),
-  t:{q:'',cat:'',type:'',sort:'date',dir:-1,page:0,size:50,sel:new Set()},editing:null,dType:'out'};
+  page:'overview',period:{kind:LS.get('periodKind','month'),month:today().slice(0,7)},
+  t:{q:'',cat:'',type:'',scope:'auto',sort:'date',dir:-1,page:0,size:50,sel:new Set()},editing:null,dType:'out'};
 S.tx=S.tx.map(t=>({...t,date:normDate(t.date)||t.date,amount:Number(t.amount)}));
 
 /* ---------- periods ---------- */
@@ -497,7 +500,7 @@ function renderPeriodCtl(){
   sel.innerHTML=KINDS.map(([k,l])=>`<option value="${k}">${k==='month'?mLong(m):k==='all'?l:l+' to '+mShort(m)}</option>`).join('');
   sel.value=S.period.kind;$('pPrev').disabled=$('pNext').disabled=S.period.kind==='all';
 }
-function shiftPeriod(dir){if(S.period.kind==='all')return;const step=S.period.kind==='month'?1:range().n;S.period.month=addMonth(S.period.month,dir*(S.period.kind==='ytd'?1:step));LS.set('period',S.period);S.t.page=0;renderAll()}
+function shiftPeriod(dir){if(S.period.kind==='all')return;if(S.t.scope==='all')S.t.scope='auto';const step=S.period.kind==='month'?1:range().n;S.period.month=addMonth(S.period.month,dir*(S.period.kind==='ytd'?1:step));LS.set('periodKind',S.period.kind);S.t.page=0;renderAll()}
 
 /* ---------- API ---------- */
 async function api(action,payload={}){
@@ -513,7 +516,6 @@ async function sync(quiet){
   try{const j=await api('list');
     S.tx=(j.transactions||[]).map(t=>({...t,date:normDate(t.date)||t.date,amount:Number(t.amount)}));S.budgets=j.budgets||{};
     LS.set('cache.tx',S.tx);LS.set('cache.budgets',S.budgets);const at=new Date();LS.set('cache.at',at.getTime());
-    if(!S.tx.some(t=>inR(t,range()))&&S.tx.length&&S.period.kind==='month'){S.period.month=S.tx.map(t=>t.date).sort().pop().slice(0,7)}
     setConn('ok','Connected',S.tx.length.toLocaleString('en-IN')+' entries · synced '+at.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'}));
     $('sLast').textContent=at.toLocaleString();renderAll();if(!quiet)toast('Synced '+S.tx.length+' entries');
   }catch(e){setConn('err',/Unauthorized/.test(e.message)?'Wrong secret key':'Offline','Showing saved copy');renderAll();toast(e.message)}
@@ -530,7 +532,7 @@ function showTip(e,h){tip.innerHTML=h;tip.style.opacity=1;const w=tip.offsetWidt
 function hideTip(){tip.style.opacity=0}
 
 /* ---------- navigation ---------- */
-const PAGES={overview:['Overview',()=>range().label],transactions:['Transactions',()=>range().label],budgets:['Budgets',()=>'Spending against your monthly limits'],settings:['Settings',()=>'Data source, import and preferences']};
+const PAGES={overview:['Overview',()=>range().label],transactions:['Transactions',()=>effScope()==='all'?'Searching all dates':range().label],budgets:['Budgets',()=>'Spending against your monthly limits'],settings:['Settings',()=>'Data source, import and preferences']};
 function go(p){S.page=p;LS.set('page',p);
   $$('[data-view]').forEach(v=>v.hidden=v.dataset.view!==p);
   $$('[data-page]').forEach(b=>b.toggleAttribute('aria-current',b.dataset.page===p)||b.dataset.page===p&&b.setAttribute('aria-current','page'));
@@ -565,6 +567,10 @@ function renderOverview(){
   const net=ci-co,pnet=prev?pi-po:null;const rate=ci?net/ci*100:null,prate=prev&&pi?(pi-po)/pi*100:null;
   let bal=null;if(S.ob&&S.ob.date){bal=S.ob.amount+S.tx.filter(t=>t.date>=S.ob.date&&t.date<r.e).reduce((a,t)=>a+(t.type==='in'?1:-1)*t.amount,0)}
   const mo=monthly(12);
+  const en=$('emptyNote');
+  if(!cur.length&&S.tx.length){const last=S.tx.reduce((a,t)=>t.date>a?t.date:a,'');const lm=last.slice(0,7);
+    en.innerHTML=`No transactions in ${esc(r.label)} yet. Your latest entry is from ${fmtDate(last)}. <button class="linkbtn" id="toLatest">Show ${mLong(lm)}</button>`;en.hidden=false;
+    $('toLatest').onclick=()=>{S.period={kind:'month',month:lm};LS.set('periodKind','month');renderAll()}}else en.hidden=true;
   const K=[
     {l:'Income',c:'--in',v:inr(ci),d:delta(ci,pi,true),s:spark(mo.map(x=>x.i),css('--in'))},
     {l:'Spending',c:'--out',v:inr(co),d:delta(co,po,false),s:spark(mo.map(x=>x.o),css('--out'))},
@@ -584,12 +590,12 @@ function renderOverview(){
       <div class="bar"><b class="${over?'over':''}" style="width:${(v/top*100).toFixed(1)}%"></b>${b?`<span class="lim" style="left:calc(${(b/top*100).toFixed(1)}% - 1px)" title="Budget"></span>`:''}</div>
       ${b?`<div class="sub">${over?`<span style="color:var(--crit);font-weight:600">${inr(v-b)} over</span> a budget of ${inr(b)}`:`${inr(b-v)} left of ${inr(b)}`}</div>`:''}</div>`}).join('')+(cats.length>10?`<div class="sub muted" style="padding-top:8px">${cats.length-10} smaller categories not shown</div>`:'')
     :`<div class="empty"><b>No spending in this period</b>Pick another period, or add a transaction.</div>`;
-  $$('#catList .cat').forEach(el=>{const open=()=>{S.t.cat=el.dataset.cat;S.t.type='out';S.t.page=0;go('transactions')};el.onclick=open;el.onkeydown=e=>{if(e.key==='Enter')open()}});
+  $$('#catList .cat').forEach(el=>{const open=()=>{S.t.cat=el.dataset.cat;S.t.q='';S.t.scope='period';S.t.type='out';S.t.page=0;go('transactions')};el.onclick=open;el.onkeydown=e=>{if(e.key==='Enter')open()}});
   // payees
   const pp={};cur.filter(t=>t.type==='out').forEach(t=>{const k=t.counterparty||t.category;pp[k]=pp[k]||{n:0,v:0};pp[k].n++;pp[k].v+=t.amount});
   const pl=Object.entries(pp).sort((a,b)=>b[1].v-a[1].v).slice(0,8);
   $('payees').innerHTML=pl.length?pl.map(([k,x])=>`<tr data-q="${esc(k)}"><td>${esc(k)}</td><td class="r num">${x.n}</td><td class="r num amt">${inr(x.v)}</td></tr>`).join(''):'<tr><td colspan="3" class="empty">No payments in this period</td></tr>';
-  $$('#payees tr[data-q]').forEach(tr=>tr.onclick=()=>{S.t.q=tr.dataset.q;S.t.cat='';S.t.type='';S.t.page=0;go('transactions')});
+  $$('#payees tr[data-q]').forEach(tr=>tr.onclick=()=>{S.t.q=tr.dataset.q;S.t.scope='period';S.t.cat='';S.t.type='';S.t.page=0;go('transactions')});
   // recent
   const rec=cur.slice().sort((a,b)=>a.date<b.date?1:a.date>b.date?-1:0).slice(0,8);
   $('recent').innerHTML=rec.length?rec.map(t=>`<tr data-id="${esc(t.id)}"><td class="num">${fmtDate(t.date)}</td><td>${esc(t.counterparty||'—')}</td><td class="hide-m"><span class="pill">${esc(t.category)}</span></td><td class="r num amt ${t.type==='in'?'in':''}">${t.type==='in'?'+':'−'}${inr(t.amount,2).replace(/^[−]/,'')}</td></tr>`).join(''):'<tr><td colspan="4" class="empty">No transactions in this period</td></tr>';
@@ -621,16 +627,18 @@ function drawCashflow(mo){
   pts.forEach(p=>el('circle',{cx:p[0],cy:p[1],r:3.5,fill:css('--net'),stroke:css('--surface'),'stroke-width':2},svg));
   mo.forEach((a,k)=>{const hit=el('rect',{x:L+bw*k,y:T,width:bw,height:H-T-B,fill:'transparent',style:'cursor:pointer'},svg);
     hit.onmousemove=e=>showTip(e,`<b>${mLong(a.m)}</b><div class="r"><span>Income</span><span>${inr(a.i)}</span></div><div class="r"><span>Spending</span><span>${inr(a.o)}</span></div><div class="r"><span>Net</span><span>${(a.i-a.o>=0?'+':'')+inr(a.i-a.o)}</span></div>`);
-    hit.onmouseleave=hideTip;hit.onclick=()=>{hideTip();S.period={kind:'month',month:a.m};LS.set('period',S.period);renderAll()}});
+    hit.onmouseleave=hideTip;hit.onclick=()=>{hideTip();S.period={kind:'month',month:a.m};LS.set('periodKind',S.period.kind);renderAll()}});
 }
 
 /* ---------- transactions table ---------- */
-function filtered(){const r=range(),f=S.t,q=f.q.trim().toLowerCase();
-  const l=S.tx.filter(t=>inR(t,r)&&(!f.cat||t.category===f.cat)&&(!f.type||t.type===f.type)&&(!q||(t.counterparty||'').toLowerCase().includes(q)||(t.note||'').toLowerCase().includes(q)||t.category.toLowerCase().includes(q)));
+function effScope(){const f=S.t;return f.scope==='auto'?(f.q.trim()?'all':'period'):f.scope}
+function filtered(){const r=range(),f=S.t,q=f.q.trim().toLowerCase(),all=effScope()==='all';
+  const l=S.tx.filter(t=>(all||inR(t,r))&&(!f.cat||t.category===f.cat)&&(!f.type||t.type===f.type)&&(!q||(t.counterparty||'').toLowerCase().includes(q)||(t.note||'').toLowerCase().includes(q)||t.category.toLowerCase().includes(q)));
   const k=f.sort,d=f.dir;l.sort((a,b)=>{let A=a[k],B=b[k];if(k==='amount'){A=(a.type==='in'?1:-1)*a.amount;B=(b.type==='in'?1:-1)*b.amount}else{A=String(A||'').toLowerCase();B=String(B||'').toLowerCase()}
     return(A>B?1:A<B?-1:(a.date<b.date?1:-1))*d});return l}
 function renderTx(){
-  const f=S.t;$('tq').value=f.q;$('tCat').value=f.cat;$$('#tType button').forEach(b=>b.setAttribute('aria-pressed',b.dataset.v===f.type));
+  const f=S.t;$('tq').value=f.q;const sc=effScope();$('tScopeP').textContent=range().label;$$('#tScope button').forEach(b=>b.setAttribute('aria-pressed',b.dataset.v===sc));
+  $('pageSub').textContent=sc==='all'?'Searching all dates':range().label;$('tCat').value=f.cat;$$('#tType button').forEach(b=>b.setAttribute('aria-pressed',b.dataset.v===f.type));
   $$('thead th.sort').forEach(th=>{if(th.dataset.k===f.sort){th.setAttribute('aria-sort',f.dir>0?'ascending':'descending');th.querySelector('.ar').textContent=f.dir>0?'▲':'▼'}else{th.removeAttribute('aria-sort');th.querySelector('.ar').textContent='↕'}});
   const l=filtered();const pages=Math.max(1,Math.ceil(l.length/f.size));f.page=Math.min(f.page,pages-1);
   const rows=l.slice(f.page*f.size,(f.page+1)*f.size);
@@ -644,17 +652,20 @@ function renderTx(){
   $$('#tBody tr[data-id]').forEach(tr=>tr.onclick=e=>{if(e.target.matches('input'))return;openDrawer(S.tx.find(t=>t.id===tr.dataset.id))});
   $$('#tBody [data-ck]').forEach(ck=>ck.onchange=()=>{ck.checked?f.sel.add(ck.dataset.ck):f.sel.delete(ck.dataset.ck);renderTx()});
   const pageIds=rows.map(t=>t.id);$('ckAll').checked=pageIds.length>0&&pageIds.every(id=>f.sel.has(id));$('ckAll').indeterminate=!$('ckAll').checked&&pageIds.some(id=>f.sel.has(id));
-  $('tSum').innerHTML=`<span><b>${l.length.toLocaleString('en-IN')}</b> transactions</span><span>Income <b class="num">${inr(total(l,'in'),2)}</b></span><span>Spending <b class="num">${inr(total(l,'out'),2)}</b></span>`;
+  $('tSum').innerHTML=`<span><b>${l.length.toLocaleString('en-IN')}</b> transactions ${sc==='all'?'across all dates':'in '+esc(range().label)}</span><span>Income <b class="num">${inr(total(l,'in'),2)}</b></span><span>Spending <b class="num">${inr(total(l,'out'),2)}</b></span>`;
   $('pgInfo').textContent=`Page ${f.page+1} of ${pages}`;$('pgPrev').disabled=f.page===0;$('pgNext').disabled=f.page>=pages-1;
   $('bulk').classList.toggle('on',f.sel.size>0);$('bulkN').textContent=f.sel.size+' selected';
+  const allSel=l.every(t=>f.sel.has(t.id));$('bulkAll').hidden=allSel||l.length<=rows.length;$('bulkAll').textContent=`Select all ${l.length} matching`;
 }
-$('tq').oninput=e=>{S.t.q=e.target.value;S.t.page=0;renderTx()};
+$('tq').oninput=e=>{S.t.q=e.target.value;if(!S.t.q.trim())S.t.scope='auto';S.t.page=0;renderTx()};
+$$('#tScope button').forEach(b=>b.onclick=()=>{S.t.scope=b.dataset.v;S.t.page=0;renderTx()});
 $('tCat').onchange=e=>{S.t.cat=e.target.value;S.t.page=0;renderTx()};
 $$('#tType button').forEach(b=>b.onclick=()=>{S.t.type=b.dataset.v;S.t.page=0;renderTx()});
 $$('thead th.sort').forEach(th=>th.onclick=()=>{const k=th.dataset.k;S.t.dir=S.t.sort===k?-S.t.dir:(k==='date'||k==='amount'?-1:1);S.t.sort=k;renderTx()});
 $('pgSize').onchange=e=>{S.t.size=+e.target.value;S.t.page=0;renderTx()};
 $('pgPrev').onclick=()=>{S.t.page--;renderTx()};$('pgNext').onclick=()=>{S.t.page++;renderTx()};
 $('ckAll').onchange=e=>{const f=S.t;const l=filtered().slice(f.page*f.size,(f.page+1)*f.size);l.forEach(t=>e.target.checked?f.sel.add(t.id):f.sel.delete(t.id));renderTx()};
+$('bulkAll').onclick=()=>{filtered().forEach(t=>S.t.sel.add(t.id));renderTx()};
 $('bulkClear').onclick=()=>{S.t.sel.clear();renderTx()};
 $('bulkApply').onclick=async()=>{const c=$('bulkCat').value;if(!c)return;const txs=S.tx.filter(t=>S.t.sel.has(t.id)).map(t=>({...t,category:c}));
   $('bulkApply').disabled=true;try{await bulk('updateMany',{txs},t=>api('update',{tx:t}));txs.forEach(n=>{const i=S.tx.findIndex(t=>t.id===n.id);S.tx[i]=n});
@@ -751,9 +762,9 @@ function fillLists(){const cats=[...new Set(S.tx.map(t=>t.category).concat(Objec
   const cps=[...new Set(S.tx.map(t=>t.counterparty).filter(Boolean))].slice(0,400);$('cpOpts').innerHTML=cps.map(c=>`<option value="${esc(c)}">`).join('')}
 
 /* ---------- global controls ---------- */
-$('pSel').onchange=e=>{S.period.kind=e.target.value;LS.set('period',S.period);S.t.page=0;renderAll()};
+$('pSel').onchange=e=>{if(S.t.scope==='all')S.t.scope='auto';S.period.kind=e.target.value;LS.set('periodKind',S.period.kind);S.t.page=0;renderAll()};
 $('pPrev').onclick=()=>shiftPeriod(-1);$('pNext').onclick=()=>shiftPeriod(1);
-$('gSearch').onkeydown=e=>{if(e.key==='Enter'){S.t.q=e.target.value;S.t.cat='';S.t.type='';S.t.page=0;e.target.value='';go('transactions')}};
+$('gSearch').onkeydown=e=>{if(e.key==='Enter'){S.t.q=e.target.value;S.t.scope='auto';S.t.cat='';S.t.type='';S.t.page=0;e.target.value='';go('transactions')}};
 $('syncBtn').onclick=()=>sync();
 $('themeBtn').onclick=()=>{const r=document.documentElement;const dark=r.dataset.theme?r.dataset.theme==='dark':matchMedia('(prefers-color-scheme: dark)').matches;r.dataset.theme=dark?'light':'dark';LS.set('theme',r.dataset.theme);renderPage()};
 let gPending=false;
