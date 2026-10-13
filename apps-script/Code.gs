@@ -12,11 +12,18 @@ const TX_SHEET = 'Transactions';
 const BUDGET_SHEET = 'Budgets';
 const TX_HEADERS = ['id', 'date', 'type', 'category', 'counterparty', 'amount', 'note', 'source', 'updated'];
 const BUDGET_HEADERS = ['category', 'monthly_budget'];
+const SETTINGS_SHEET = 'Settings';
+const SETTINGS_HEADERS = ['key', 'value'];
+const TRASH_SHEET = 'Trash';
+const TRASH_HEADERS = TX_HEADERS.concat(['deleted_at']);
+const TRASH_DAYS = 30;
 
 /** Run once from the editor: creates the tabs and asks nothing else. */
 function setup() {
   sheet_(TX_SHEET, TX_HEADERS);
   sheet_(BUDGET_SHEET, BUDGET_HEADERS);
+  sheet_(SETTINGS_SHEET, SETTINGS_HEADERS);
+  sheet_(TRASH_SHEET, TRASH_HEADERS);
   if (!PropertiesService.getScriptProperties().getProperty('API_KEY')) {
     throw new Error('Now set API_KEY: Project Settings → Script properties → Add property API_KEY');
   }
@@ -39,7 +46,7 @@ function handle_(req) {
   lock.waitLock(20000);
   try {
     switch (req.action) {
-      case 'list':      return out_({ ok: true, transactions: readTx_(), budgets: readBudgets_() });
+      case 'list':      return out_({ ok: true, transactions: readTx_(), budgets: readBudgets_(), settings: readSettings_() });
       case 'add':       return out_({ ok: true, tx: upsert_([req.tx])[0] });
       case 'update':    return out_({ ok: true, tx: upsert_([req.tx])[0] });
       case 'delete':    return out_({ ok: true, deleted: delete_(req.id) });
@@ -47,6 +54,8 @@ function handle_(req) {
       case 'deleteMany':return out_({ ok: true, count: deleteMany_(req.ids || []) });
       case 'import':    return out_({ ok: true, added: importRows_(req.rows || []) });
       case 'budgets':   return out_({ ok: true, budgets: saveBudgets_(req.budgets || {}) });
+      case 'settings':  return out_({ ok: true, settings: saveSettings_(req.settings || {}) });
+      case 'restore':   return out_({ ok: true, count: restore_(req.ids || []) });
       case 'ping':      return out_({ ok: true });
       default:          return out_({ ok: false, error: 'Unknown action' });
     }
@@ -122,19 +131,68 @@ function upsert_(list) {
 }
 
 function delete_(id) {
-  const sh = sheet_(TX_SHEET, TX_HEADERS);
-  const row = idIndex_(sh)[String(id)];
-  if (!row) return false;
-  sh.deleteRow(row);
-  return true;
+  return deleteMany_([id]) > 0;
 }
 
+/** Deleted rows are moved to the Trash tab and kept for 30 days, so a delete can be undone. */
 function deleteMany_(ids) {
   const sh = sheet_(TX_SHEET, TX_HEADERS);
+  const tr = sheet_(TRASH_SHEET, TRASH_HEADERS);
   const idx = idIndex_(sh);
   const rows = ids.map(id => idx[String(id)]).filter(Boolean).sort((a, b) => b - a);
+  if (!rows.length) return 0;
+  const now = new Date();
+  const moved = rows.map(r => sh.getRange(r, 1, 1, TX_HEADERS.length).getValues()[0].concat([now]));
+  tr.getRange(tr.getLastRow() + 1, 1, moved.length, TRASH_HEADERS.length).setValues(moved);
   rows.forEach(r => sh.deleteRow(r));
+  purgeTrash_();
   return rows.length;
+}
+
+function restore_(ids) {
+  const sh = sheet_(TX_SHEET, TX_HEADERS);
+  const tr = sheet_(TRASH_SHEET, TRASH_HEADERS);
+  const n = tr.getLastRow() - 1;
+  if (n < 1) return 0;
+  const want = {}; ids.forEach(id => want[String(id)] = true);
+  const vals = tr.getRange(2, 1, n, TRASH_HEADERS.length).getValues();
+  const back = [], drop = [];
+  vals.forEach((r, i) => { if (want[String(r[0])]) { back.push(r.slice(0, TX_HEADERS.length)); drop.push(i + 2); } });
+  if (back.length) sh.getRange(sh.getLastRow() + 1, 1, back.length, TX_HEADERS.length).setValues(back);
+  drop.sort((a, b) => b - a).forEach(r => tr.deleteRow(r));
+  return back.length;
+}
+
+function purgeTrash_() {
+  const tr = sheet_(TRASH_SHEET, TRASH_HEADERS);
+  const n = tr.getLastRow() - 1;
+  if (n < 1) return;
+  const cutoff = Date.now() - TRASH_DAYS * 864e5;
+  const col = tr.getRange(2, TRASH_HEADERS.length, n, 1).getValues();
+  const old = [];
+  col.forEach((r, i) => { const t = r[0] instanceof Date ? r[0].getTime() : Date.parse(r[0]); if (t && t < cutoff) old.push(i + 2); });
+  old.sort((a, b) => b - a).forEach(r => tr.deleteRow(r));
+}
+
+/** Settings are stored as key → JSON value (transfer categories, bills, opening balance). */
+function readSettings_() {
+  const sh = sheet_(SETTINGS_SHEET, SETTINGS_HEADERS);
+  const n = sh.getLastRow() - 1;
+  const s = {};
+  if (n < 1) return s;
+  sh.getRange(2, 1, n, 2).getValues().forEach(r => { if (r[0] !== '') { try { s[r[0]] = JSON.parse(r[1]); } catch (e) { s[r[0]] = r[1]; } } });
+  return s;
+}
+
+function saveSettings_(obj) {
+  const sh = sheet_(SETTINGS_SHEET, SETTINGS_HEADERS);
+  const cur = readSettings_();
+  Object.keys(obj).forEach(k => cur[k] = obj[k]);
+  const n = sh.getLastRow() - 1;
+  if (n > 0) sh.getRange(2, 1, n, 2).clearContent();
+  const rows = Object.keys(cur).map(k => [k, JSON.stringify(cur[k])]);
+  if (rows.length) sh.getRange(2, 1, rows.length, 2).setNumberFormat('@').setValues(rows);
+  return cur;
 }
 
 /** Bulk import; rows whose id already exists are skipped, so re-importing is safe. */

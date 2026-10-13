@@ -7,6 +7,9 @@ A small personal expense tracker. The page is hosted on GitHub Pages, and the da
 - **Overview:** income, spending, net cash flow, savings rate and closing balance, each compared with the previous period; a 12-month cash-flow chart; spending by category against budget; top payees; recent transactions.
 - **Transactions:** a sortable, paged table with search, category and type filters, multi-select to recategorise or delete in bulk, and CSV export of the filtered view.
 - **Budgets:** monthly limits per category, with On track / At risk / Over status.
+- **Bills & forecast:** finds regular payments in your history (same payee and amount in 3 of the last 6 months), lets you add EMIs and other fixed bills, and shows whether your balance covers everything due before your next salary.
+- **Transfers:** mark categories such as Cash deposit or ATM cash as transfers. They still change your balance but are left out of income, spending, budgets and savings rate.
+- **Undo:** deleted transactions go to a Trash tab in your sheet for 30 days, and the confirmation has an Undo button.
 - **Reporting periods:** a single month, last 3/6/12 months, year to date, or all time.
 - **Keyboard:** `n` new transaction, `/` search, `g o` / `g t` / `g b` to switch pages, `Esc` to close the editor.
 
@@ -48,6 +51,9 @@ id,date,type,category,counterparty,amount,note,source
 `type` is `in` or `out`, `date` is `YYYY-MM-DD`, and `amount` is positive. Rows whose `id` already exists are skipped.
 
 ## Updating the backend
+
+Settings (opening balance, transfer categories, bills) are stored in a `Settings` tab and deleted rows in a `Trash` tab. Both are created automatically by the current `Code.gs`; with an older script the app keeps settings on the device only and tells you so.
+
 If `Code.gs` changes: paste the new version, then **Deploy → Manage deployments → ✎ → Version: New version → Deploy**. The URL stays the same.
 
 ## Security notes
