@@ -650,9 +650,10 @@ const isTr=t=>trCats().includes(t.category);
 const total=(l,ty)=>l.reduce((a,t)=>a+(t.type===ty&&!isTr(t)?t.amount:0),0);
 const trTotal=l=>l.reduce((a,t)=>a+(isTr(t)?t.amount:0),0);
 let settingsWarned=false;
-async function saveSettings(patch){S.settings={...S.settings,...patch};LS.set('cache.settings',S.settings);
-  try{const j=await api('settings',{settings:patch});S.settings={...S.settings,...j.settings};LS.set('cache.settings',S.settings)}
-  catch(e){if(/Unknown action/.test(e.message)){if(!settingsWarned){settingsWarned=true;toast('Saved on this device. Update the Apps Script to sync this across devices.')}}else toast('Not saved to your sheet: '+e.message)}}
+function saveSettings(patch){S.settings={...S.settings,...patch};LS.set('cache.settings',S.settings);
+  bg('Saving settings',async()=>{try{await api('settings',{settings:patch})}
+    catch(e){if(/Unknown action/.test(e.message)){if(!settingsWarned){settingsWarned=true;toast('Saved on this device. Update the Apps Script to sync this across devices.')}}else throw e}});
+  return Promise.resolve()}
 function obGet(){return S.settings.ob||S.ob}
 function renderPeriodCtl(){
   const sel=$('pSel');const m=S.period.month;
@@ -669,20 +670,31 @@ async function api(action,payload={}){
   const j=await res.json();if(!j.ok)throw new Error(j.error||'Request failed');return j;
 }
 function setConn(state,txt,sub){$('dot').className='dot '+state;$('connTxt').textContent=txt;if(sub!=null)$('connSub').textContent=sub;$('sStatus').textContent=txt}
+/* ---------- background write queue: the screen updates at once, Google is updated in order behind it ---------- */
+const Q={n:0,chain:Promise.resolve(),needSync:false};
+let lastSyncTxt='';
+function connIdle(){if(Q.n>0)setConn('busy','Saving…',`${Q.n} change${Q.n>1?'s':''} going to your sheet`);else if(S.conn)setConn('ok','Connected',lastSyncTxt||'Up to date')}
+function bg(label,fn,revert){Q.n++;connIdle();
+  Q.chain=Q.chain.then(fn).catch(e=>{if(revert)revert();renderAll();toast(`${label} didn't reach your sheet: ${e.message}`,{label:'Sync',fn:()=>sync()})})
+    .finally(()=>{Q.n--;connIdle();if(!Q.n&&Q.needSync){Q.needSync=false;sync(true)}});return Q.chain}
+function snapshot(){return{tx:S.tx.slice(),budgets:{...S.budgets}}}
+function restoreSnap(s){S.tx=s.tx;S.budgets=s.budgets;LS.set('cache.tx',S.tx);LS.set('cache.budgets',S.budgets)}
+
 async function sync(quiet){
   if(!S.conn){setConn('','Not connected','Open Settings to connect');return}
-  setConn('busy','Syncing…');
-  try{const j=await api('list');
+  if(Q.n>0){Q.needSync=true;return}
+  setConn('busy','Syncing…',lastSyncTxt||'Fetching from your sheet');const t0=performance.now();
+  try{const j=await api('list');if(Q.n>0){Q.needSync=true;return}
     S.tx=(j.transactions||[]).map(t=>({...t,date:normDate(t.date)||t.date,amount:Number(t.amount)}));S.budgets=j.budgets||{};
     if(j.settings){S.settings=j.settings;LS.set('cache.settings',S.settings);if(!S.settings.ob&&S.ob)saveSettings({ob:S.ob})}
     LS.set('cache.tx',S.tx);LS.set('cache.budgets',S.budgets);const at=new Date();LS.set('cache.at',at.getTime());
-    setConn('ok','Connected',S.tx.length.toLocaleString('en-IN')+' entries · synced '+at.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'}));
+    lastSyncTxt=S.tx.length.toLocaleString('en-IN')+' entries · synced '+at.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})+' in '+((performance.now()-t0)/1000).toFixed(1)+' s'+(j.cached?' (cached)':'');connIdle();
     $('sLast').textContent=at.toLocaleString();renderAll();if(!quiet)toast('Synced '+S.tx.length+' entries');
   }catch(e){setConn('err',/Unauthorized/.test(e.message)?'Wrong secret key':'Offline','Showing saved copy');renderAll();toast(e.message)}
 }
 async function bulk(action,items,single){ // falls back to one call per item on an older backend
   try{return await api(action,items)}catch(e){if(!/Unknown action/.test(e.message))throw e;
-    const list=items.txs||items.ids;for(const x of list)await single(x);return{ok:true}}
+    const list=items.txs||items.ids;if(list.length>10)throw new Error('Update the Apps Script (Code.gs) to change many rows at once');for(const x of list)await single(x);return{ok:true}}
 }
 
 /* ---------- toast & tip ---------- */
@@ -690,9 +702,11 @@ let tt;function toast(m,act){const t=$('toast');t.textContent=m;t.classList.togg
   if(act){const b=document.createElement('button');b.textContent=act.label;b.onclick=()=>{t.classList.remove('on','act');act.fn()};t.appendChild(b)}
   t.classList.add('on');clearTimeout(tt);tt=setTimeout(()=>t.classList.remove('on','act'),act?7000:2800)}
 async function undoDelete(rows){
-  try{let n=0;try{n=(await api('restore',{ids:rows.map(r=>r.id)})).count}catch(e){if(!/Unknown action/.test(e.message))throw e}
-    if(n<rows.length){const have=new Set(S.tx.map(t=>t.id));await api('import',{rows:rows.filter(r=>!have.has(r.id))})}
-    await sync(true);toast(`Restored ${rows.length} transaction${rows.length>1?'s':''}`)}catch(e){toast('Could not restore: '+e.message)}}
+  const snap=snapshot();const have=new Set(S.tx.map(t=>t.id));S.tx=S.tx.concat(rows.filter(r=>!have.has(r.id)));LS.set('cache.tx',S.tx);renderAll();
+  toast(`Restored ${rows.length} transaction${rows.length>1?'s':''}`);
+  return bg('Restoring',async()=>{let n=0;try{n=(await api('restore',{ids:rows.map(r=>r.id)})).count}catch(e){if(!/Unknown action/.test(e.message))throw e}
+    if(n<rows.length)await api('import',{rows})},()=>restoreSnap(snap));
+}
 const tip=$('tip');
 function showTip(e,h){tip.innerHTML=h;tip.style.opacity=1;const w=tip.offsetWidth;tip.style.left=Math.max(8,Math.min(e.clientX+14,innerWidth-w-8))+'px';tip.style.top=(e.clientY+16)+'px'}
 function hideTip(){tip.style.opacity=0}
@@ -864,12 +878,13 @@ $('ckAll').onchange=e=>{const f=S.t;const l=filtered().slice(f.page*f.size,(f.pa
 $('bulkAll').onclick=()=>{filtered().forEach(t=>S.t.sel.add(t.id));renderTx()};
 $('bulkClear').onclick=()=>{S.t.sel.clear();renderTx()};
 $('bulkApply').onclick=async()=>{const c=$('bulkCat').value;if(!c)return;const txs=S.tx.filter(t=>S.t.sel.has(t.id)).map(t=>({...t,category:c}));
-  $('bulkApply').disabled=true;try{await bulk('updateMany',{txs},t=>api('update',{tx:t}));txs.forEach(n=>{const i=S.tx.findIndex(t=>t.id===n.id);S.tx[i]=n});
-  LS.set('cache.tx',S.tx);toast(`Moved ${txs.length} to ${c}`);S.t.sel.clear();renderAll()}catch(e){toast('Not moved: '+e.message)}finally{$('bulkApply').disabled=false}};
+  const snap=snapshot();txs.forEach(n=>{const i=S.tx.findIndex(t=>t.id===n.id);S.tx[i]=n});LS.set('cache.tx',S.tx);toast(`Moved ${txs.length} to ${c}`);S.t.sel.clear();renderAll();
+  bg('Moving',()=>bulk('updateMany',{txs},t=>api('update',{tx:t})),()=>restoreSnap(snap))};
 $('bulkDel').onclick=async()=>{const b=$('bulkDel');if(b.dataset.arm!=='1'){b.dataset.arm='1';b.textContent=`Confirm delete ${S.t.sel.size}`;setTimeout(()=>{b.dataset.arm='';b.textContent='Delete'},3500);return}
   b.dataset.arm='';b.textContent='Delete';const ids=[...S.t.sel];
   const gone=S.tx.filter(t=>S.t.sel.has(t.id));
-  try{await bulk('deleteMany',{ids},id=>api('delete',{id}));S.tx=S.tx.filter(t=>!S.t.sel.has(t.id));LS.set('cache.tx',S.tx);toast(`Deleted ${ids.length}`,{label:'Undo',fn:()=>undoDelete(gone)});S.t.sel.clear();renderAll()}catch(e){toast('Not deleted: '+e.message)}};
+  const snap=snapshot();const del=new Set(ids);S.tx=S.tx.filter(t=>!del.has(t.id));LS.set('cache.tx',S.tx);toast(`Deleted ${ids.length}`,{label:'Undo',fn:()=>undoDelete(gone)});S.t.sel.clear();renderAll();
+  bg('Deleting',()=>bulk('deleteMany',{ids},id=>api('delete',{id})),()=>restoreSnap(snap))};
 $('expFiltered').onclick=()=>exportCSV(filtered(),'transactions-'+range().label.replace(/[^\w]+/g,'-').toLowerCase());
 
 /* ---------- budgets ---------- */
@@ -889,7 +904,8 @@ function renderBudgets(){
   $$('[data-b]').forEach(i=>i.oninput=()=>{const v=parseFloat(i.value);if(v>0)budDraft[i.dataset.b]=v;else delete budDraft[i.dataset.b]});
 }
 $('budAdd').onclick=()=>{const c=prompt('Category name');if(c&&c.trim()){budDraft=budDraft||{...S.budgets};budDraft[c.trim()]=budDraft[c.trim()]||1000;renderBudgets()}};
-$('budSave').onclick=async()=>{try{const j=await api('budgets',{budgets:budDraft||S.budgets});S.budgets=j.budgets;LS.set('cache.budgets',S.budgets);budDraft=null;toast('Budgets saved');renderAll()}catch(e){toast('Not saved: '+e.message)}};
+$('budSave').onclick=()=>{const snap=snapshot();const b={};Object.entries(budDraft||S.budgets).forEach(([k,v])=>{if(v>0)b[k]=v});S.budgets=b;LS.set('cache.budgets',b);budDraft=null;toast('Budgets saved');renderAll();
+  bg('Saving budgets',()=>api('budgets',{budgets:b}),()=>restoreSnap(snap))};
 
 /* ---------- drawer ---------- */
 function setDType(v){S.dType=v;$$('#dType button').forEach(b=>b.setAttribute('aria-pressed',b.dataset.v===v))}
@@ -910,13 +926,13 @@ $('txForm').onsubmit=async e=>{e.preventDefault();
   if(!$('fDate').value){toast('Pick a date');return}
   const ed=S.editing;const t={id:ed?ed.id:'m-'+Date.now().toString(36)+Math.random().toString(36).slice(2,7),date:$('fDate').value,type:S.dType,
     category:$('fCat').value.trim()||'Uncategorised',counterparty:$('fCp').value.trim(),amount:Math.round(amt*100)/100,note:$('fNote').value.trim(),source:ed?ed.source:'manual'};
-  $('dSave').disabled=true;
-  try{await api(ed?'update':'add',{tx:t});const i=S.tx.findIndex(x=>x.id===t.id);if(i>=0)S.tx[i]=t;else S.tx.push(t);LS.set('cache.tx',S.tx);
-    closeDrawer();toast(ed?'Changes saved':'Transaction saved');renderAll()}
-  catch(err){toast('Not saved: '+err.message)}finally{$('dSave').disabled=false}};
+  const snap=snapshot();const i=S.tx.findIndex(x=>x.id===t.id);if(i>=0)S.tx[i]=t;else S.tx.push(t);LS.set('cache.tx',S.tx);
+  closeDrawer();toast(ed?'Changes saved':'Transaction saved');renderAll();
+  bg('Saving',()=>api(ed?'update':'add',{tx:t}),()=>restoreSnap(snap))};
 $('dDel').onclick=async()=>{const b=$('dDel');if(b.dataset.arm!=='1'){b.dataset.arm='1';b.textContent='Confirm delete';setTimeout(()=>{b.dataset.arm='';b.textContent='Delete'},3500);return}
   b.dataset.arm='';b.textContent='Delete';const t=S.editing;
-  try{await api('delete',{id:t.id});S.tx=S.tx.filter(x=>x.id!==t.id);S.t.sel.delete(t.id);LS.set('cache.tx',S.tx);closeDrawer();toast('Transaction deleted',{label:'Undo',fn:()=>undoDelete([t])});renderAll()}catch(e){toast('Not deleted: '+e.message)}};
+  const snap=snapshot();S.tx=S.tx.filter(x=>x.id!==t.id);S.t.sel.delete(t.id);LS.set('cache.tx',S.tx);closeDrawer();toast('Transaction deleted',{label:'Undo',fn:()=>undoDelete([t])});renderAll();
+  bg('Deleting',()=>api('delete',{id:t.id}),()=>restoreSnap(snap))};
 
 /* ---------- settings ---------- */
 function renderSettings(){$('sUrl').value=S.conn?S.conn.url:'';$('sKey').value=S.conn?S.conn.key:'';$('sCount').textContent=S.tx.length.toLocaleString('en-IN');
@@ -1108,6 +1124,7 @@ document.addEventListener('keydown',e=>{
   if(gPending){gPending=false;const m={o:'overview',t:'transactions',b:'budgets',s:'settings',i:'import',l:'bills'}[e.key];if(m)go(m);return}
   if(e.key==='g'){gPending=true;setTimeout(()=>gPending=false,900)}
 });
+document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible'&&Date.now()-(LS.get('cache.at',0)||0)>5*60e3)sync(true)});
 let rz;addEventListener('resize',()=>{clearTimeout(rz);rz=setTimeout(()=>{if(S.page==='overview')renderOverview()},150)});
 
 /* ---------- init ---------- */

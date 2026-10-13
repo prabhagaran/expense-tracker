@@ -42,6 +42,9 @@ function doPost(e) {
 function handle_(req) {
   const key = PropertiesService.getScriptProperties().getProperty('API_KEY');
   if (!key || req.key !== key) return out_({ ok: false, error: 'Unauthorized' });
+  // Reads don't need the lock and are served from cache when nothing has changed.
+  if (req.action === 'list') return out_(listCached_());
+  if (req.action === 'ping') return out_({ ok: true });
   const lock = LockService.getScriptLock();
   lock.waitLock(20000);
   try {
@@ -62,9 +65,32 @@ function handle_(req) {
   } catch (err) {
     return out_({ ok: false, error: String(err && err.message || err) });
   } finally {
+    clearListCache_();
     lock.releaseLock();
   }
 }
+
+/* ---------- list cache: the full list is kept in CacheService (in chunks) until the next write ---------- */
+const CACHE_CHUNK = 90000;
+function listCached_() {
+  const cache = CacheService.getScriptCache();
+  const meta = cache.get('list:n');
+  if (meta) {
+    const keys = []; for (let i = 0; i < Number(meta); i++) keys.push('list:' + i);
+    const parts = cache.getAll(keys);
+    if (keys.every(k => parts[k] != null)) { const o = JSON.parse(keys.map(k => parts[k]).join('')); o.cached = true; return o; }
+  }
+  const o = { ok: true, transactions: readTx_(), budgets: readBudgets_(), settings: readSettings_() };
+  try {
+    const s = JSON.stringify(o), put = {};
+    const n = Math.ceil(s.length / CACHE_CHUNK);
+    for (let i = 0; i < n; i++) put['list:' + i] = s.slice(i * CACHE_CHUNK, (i + 1) * CACHE_CHUNK);
+    put['list:n'] = String(n);
+    cache.putAll(put, 21600);
+  } catch (e) { /* cache is an optimisation only */ }
+  return o;
+}
+function clearListCache_() { try { CacheService.getScriptCache().remove('list:n'); } catch (e) {} }
 
 function out_(obj) {
   return ContentService.createTextOutput(JSON.stringify(obj)).setMimeType(ContentService.MimeType.JSON);
@@ -95,8 +121,9 @@ function rowToTx_(r) {
 }
 
 /** Accepts Date objects, yyyy-mm-dd, dd-mm-yyyy and dd/mm/yyyy; returns yyyy-MM-dd. */
+let TZ_ = null;
 function normDate_(v) {
-  if (v instanceof Date) return Utilities.formatDate(v, Session.getScriptTimeZone(), 'yyyy-MM-dd');
+  if (v instanceof Date) return Utilities.formatDate(v, TZ_ || (TZ_ = Session.getScriptTimeZone()), 'yyyy-MM-dd');
   const s = String(v || '').trim().replace(/^'/, '');
   let m = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
   if (m) return m[1] + '-' + ('0' + m[2]).slice(-2) + '-' + ('0' + m[3]).slice(-2);
