@@ -1,0 +1,5 @@
+# Never commit financial data
+*.csv
+*.xlsx
+*.pdf
+data/
