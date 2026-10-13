@@ -317,6 +317,13 @@ tbody td{height:46px}
 .cat-in{height:28px;width:180px}
 .skrow td{height:46px}
 @media (max-width:860px){.tabbar{grid-template-columns:repeat(6,1fr)}.banner{flex-wrap:wrap}.banner .btn{margin-left:0}}
+.cf .cfb{transition:opacity .15s}
+.cf.hov .cfb:not(.on){opacity:.35}
+.cf .grow{animation:cfgrow .6s cubic-bezier(.2,.8,.2,1) both}
+@keyframes cfgrow{from{transform:scaleY(0)}to{transform:scaleY(1)}}
+.cf .cfnet{animation:cffade .5s .35s both}
+@keyframes cffade{from{opacity:0}}
+.tip .sw{width:8px;height:8px;margin-right:4px;vertical-align:0}
 </style>
 </head>
 <body>
@@ -700,28 +707,54 @@ function renderOverview(){
 const NS='http://www.w3.org/2000/svg';
 function el(t,a,p){const e=document.createElementNS(NS,t);for(const k in a)e.setAttribute(k,a[k]);p&&p.appendChild(e);return e}
 function nice(v){if(v<=0)return 1;const p=Math.pow(10,Math.floor(Math.log10(v)));const m=v/p;return [1,1.2,1.5,2,2.5,3,4,5,6,8,10].find(s=>m<=s)*p}
+let cfAnimated=false;
 function drawCashflow(mo){
   const box=$('cashflow');box.innerHTML='';
   if(!mo.some(x=>x.i||x.o)){box.innerHTML='<div class="empty"><b>No activity in the last 12 months</b>Import a statement or add transactions to see cash flow.</div>';return}
-  const W=Math.max(box.clientWidth,320),H=250,L=54,R=8,T=10,B=26;const svg=el('svg',{viewBox:`0 0 ${W} ${H}`,role:'img','aria-label':'Monthly income and spending'},box);
-  // diverging: income above zero, spending below
-  const up=nice(Math.max(...mo.map(x=>x.i))),dn=nice(Math.max(...mo.map(x=>x.o)));const span=up+dn;
-  const y=v=>T+(H-T-B)*(up-v)/span;
-  const ticks=[-dn,-dn/2,0,up/2,up];ticks.forEach(v=>{el('line',{x1:L,x2:W-R,y1:y(v),y2:y(v),stroke:css(v===0?'--ink3':'--line-soft')},svg);el('text',{x:L-8,y:y(v)+4,'text-anchor':'end'},svg).textContent=short(Math.abs(v))});
-  const bw=(W-L-R)/mo.length,w=Math.max(4,Math.min(26,bw*.5));
-  const rr=(x,y0,y1,fill,down)=>{const h=Math.abs(y1-y0);if(h<0.5)return;const r=Math.min(3,h,w/2);
-    el('path',{d:down?`M${x},${y0}V${y1-r}q0,${r} ${r},${r}h${w-2*r}q${r},0 ${r},-${r}V${y0}Z`:`M${x},${y0}V${y1+r}q0,-${r} ${r},-${r}h${w-2*r}q${r},0 ${r},${r}V${y0}Z`,fill},svg)};
+  const W=Math.max(box.clientWidth,320),H=280,L=54,R=8,T=22,B=28;
+  const svg=el('svg',{viewBox:`0 0 ${W} ${H}`,role:'img','aria-label':'Monthly income and spending',class:'cf'},box);
+  // Scale: one outlier month (e.g. a vehicle purchase) shouldn't flatten the rest. If the largest value is
+  // more than 2.2x the next one, cap that side of the axis and draw the outlier as a broken bar with its value.
+  const capOf=vals=>{const s=vals.filter(v=>v>0).sort((a,b)=>b-a);if(!s.length)return{cap:1,broken:false};
+    if(s.length>1&&s[0]>2.2*s[1])return{cap:nice(s[1]*1.25),broken:true};return{cap:nice(s[0]),broken:false}};
+  const upC=capOf(mo.map(x=>x.i)),dnC=capOf(mo.map(x=>x.o));const up=upC.cap,dn=dnC.cap,span=up+dn;
+  const y=v=>T+(H-T-B)*(up-Math.max(-dn,Math.min(up,v)))/span;
+  const defs=el('defs',{},svg);
+  const grad=(id,c,flip)=>{const g=el('linearGradient',{id,x1:0,y1:flip?1:0,x2:0,y2:flip?0:1},defs);
+    el('stop',{offset:'0%','stop-color':c,'stop-opacity':1},g);el('stop',{offset:'100%','stop-color':c,'stop-opacity':.62},g)};
+  grad('gIn',css('--in'),false);grad('gOut',css('--out'),true);
+  [-dn,-dn/2,0,up/2,up].forEach(v=>{if(v!==0)el('line',{x1:L,x2:W-R,y1:y(v),y2:y(v),stroke:css('--line-soft'),'stroke-dasharray':'2 4'},svg);
+    el('text',{x:L-10,y:y(v)+4,'text-anchor':'end'},svg).textContent=v===0?'₹0':(v>0?'':'−')+short(Math.abs(v))});
+  const bw=(W-L-R)/mo.length,w=Math.max(5,Math.min(22,bw*.42));
   const sel=S.period.kind==='month'?S.period.month:null;
-  mo.forEach((a,k)=>{const cx=L+bw*k+bw/2;if(a.m===sel)el('rect',{x:L+bw*k+2,y:T,width:bw-4,height:H-T-B,fill:css('--sel'),rx:4},svg);
-    rr(cx-w/2,y(0)-1,y(a.i),css('--in'),false);rr(cx-w/2,y(0)+1,y(-a.o),css('--out'),true);
-    if(bw>=42||k%2===1)el('text',{x:cx,y:H-6,'text-anchor':'middle',style:a.m===sel?'fill:'+css('--ink')+';font-weight:600':''},svg).textContent=mShort(a.m)});
-  // net line
-  const pts=mo.map((a,k)=>[L+bw*k+bw/2,y(a.i-a.o)]);
-  el('path',{d:pts.map((p,i)=>(i?'L':'M')+p[0].toFixed(1)+','+p[1].toFixed(1)).join(''),fill:'none',stroke:css('--net'),'stroke-width':2,'stroke-linejoin':'round'},svg);
-  pts.forEach(p=>el('circle',{cx:p[0],cy:p[1],r:3.5,fill:css('--net'),stroke:css('--surface'),'stroke-width':2},svg));
-  mo.forEach((a,k)=>{const hit=el('rect',{x:L+bw*k,y:T,width:bw,height:H-T-B,fill:'transparent',style:'cursor:pointer'},svg);
-    hit.onmousemove=e=>showTip(e,`<b>${mLong(a.m)}</b><div class="r"><span>Income</span><span>${inr(a.i)}</span></div><div class="r"><span>Spending</span><span>${inr(a.o)}</span></div><div class="r"><span>Net</span><span>${(a.i-a.o>=0?'+':'')+inr(a.i-a.o)}</span></div>`);
-    hit.onmouseleave=hideTip;hit.onclick=()=>{hideTip();S.period={kind:'month',month:a.m};LS.set('periodKind',S.period.kind);renderAll()}});
+  const cols=[];
+  const bar=(x,y0,y1,fill,down,broken,val)=>{const h=Math.abs(y1-y0);if(h<0.5)return null;const r=Math.min(5,h,w/2);
+    const d=down?`M${x},${y0}V${y1-r}q0,${r} ${r},${r}h${w-2*r}q${r},0 ${r},-${r}V${y0}Z`:`M${x},${y0}V${y1+r}q0,-${r} ${r},-${r}h${w-2*r}q${r},0 ${r},${r}V${y0}Z`;
+    const g=el('g',{class:'cfb'+(cfAnimated?'':' grow'),style:`transform-origin:${x+w/2}px ${y0}px`},svg);el('path',{d,fill},g);
+    if(broken){const by=down?y1-14:y1+10;const s=css('--surface');
+      el('path',{d:`M${x-2},${by+3}l${w+4},-6M${x-2},${by+8}l${w+4},-6`,stroke:s,'stroke-width':2.5,fill:'none'},g);
+      el('text',{x:x+w/2,y:down?y1-22:y1-6,'text-anchor':'middle',style:'font-size:11px;font-weight:600;fill:'+css('--ink')+(down?';paint-order:stroke;stroke:'+css('--surface')+';stroke-width:3px':'')},g).textContent=short(val)}
+    return g};
+  mo.forEach((a,k)=>{const x0=L+bw*k,cx=x0+bw/2;
+    const band=el('rect',{x:x0+3,y:T-6,width:bw-6,height:H-T-B+12,rx:8,fill:a.m===sel?css('--sel'):'transparent',class:'cfband'},svg);
+    const gi=bar(cx-w-1.5,y(0)-1,y(a.i),'url(#gIn)',false,a.i>up,a.i),go=bar(cx+1.5,y(0)+1,y(-a.o),'url(#gOut)',true,a.o>dn,a.o);
+    cols.push({a,band,parts:[gi,go].filter(Boolean)});
+    if(bw>=46||k%2===1)el('text',{x:cx,y:H-B+16,'text-anchor':'middle',style:a.m===sel?'fill:'+css('--ink')+';font-weight:600':''},svg).textContent=mShort(a.m)});
+  el('line',{x1:L,x2:W-R,y1:y(0),y2:y(0),stroke:css('--ink3'),'stroke-width':1},svg);
+  // net: smooth line through month centres
+  const pts=mo.map((a,k)=>[L+bw*k+bw/2,y(a.i-a.o)]);let d=`M${pts[0][0]},${pts[0][1]}`;
+  for(let i=0;i<pts.length-1;i++){const p0=pts[Math.max(0,i-1)],p1=pts[i],p2=pts[i+1],p3=pts[Math.min(pts.length-1,i+2)];
+    d+=`C${p1[0]+(p2[0]-p0[0])/6},${p1[1]+(p2[1]-p0[1])/6} ${p2[0]-(p3[0]-p1[0])/6},${p2[1]-(p3[1]-p1[1])/6} ${p2[0]},${p2[1]}`}
+  el('path',{d,fill:'none',stroke:css('--net'),'stroke-width':2,'stroke-linejoin':'round','stroke-linecap':'round',opacity:.9,class:'cfnet'},svg);
+  const dots=pts.map(p=>el('circle',{cx:p[0],cy:p[1],r:3.5,fill:css('--net'),stroke:css('--surface'),'stroke-width':2},svg));
+  cols.forEach((c,k)=>{const hit=el('rect',{x:L+bw*k,y:T-6,width:bw,height:H-T-B+12,fill:'transparent',style:'cursor:pointer'},svg);const a=c.a;
+    hit.onmouseenter=()=>{svg.classList.add('hov');c.parts.forEach(p=>p.classList.add('on'));if(a.m!==sel)c.band.setAttribute('fill',css('--hover'));dots[k].setAttribute('r',5)};
+    hit.onmousemove=e=>showTip(e,`<b>${mLong(a.m)}</b><div class="r"><span><i class="sw" style="background:var(--in)"></i> Income</span><span>${inr(a.i)}</span></div><div class="r"><span><i class="sw" style="background:var(--out)"></i> Spending</span><span>${inr(a.o)}</span></div><div class="r" style="border-top:1px solid rgba(255,255,255,.2);margin-top:4px;padding-top:4px"><span>Net</span><span>${(a.i-a.o>=0?'+':'')+inr(a.i-a.o)}</span></div>`);
+    hit.onmouseleave=()=>{svg.classList.remove('hov');c.parts.forEach(p=>p.classList.remove('on'));if(a.m!==sel)c.band.setAttribute('fill','transparent');dots[k].setAttribute('r',3.5);hideTip()};
+    hit.onclick=()=>{hideTip();S.period={kind:'month',month:a.m};LS.set('periodKind','month');renderAll()}});
+  if(upC.broken||dnC.broken)$('cfHint').textContent='Last 12 months · bars with a break are larger than the scale shows';
+  else $('cfHint').textContent='Last 12 months · click a month to open it';
+  cfAnimated=true;
 }
 
 /* ---------- transactions table ---------- */
