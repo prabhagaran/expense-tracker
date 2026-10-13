@@ -10,6 +10,16 @@ A small personal expense tracker. The page is hosted on GitHub Pages, and the da
 - **Reporting periods:** a single month, last 3/6/12 months, year to date, or all time.
 - **Keyboard:** `n` new transaction, `/` search, `g o` / `g t` / `g b` to switch pages, `Esc` to close the editor.
 
+## Adding new months
+
+Once a month, download your Canara e-passbook as a PDF (ai1 app or net banking → e-Passbook / Statement → any date range → PDF) and drop it on **Import statement**. The PDF is read in your browser. You'll see how many transactions are new, how many are already in your sheet, and which payees still need a category; then you confirm.
+
+- Overlapping dates are fine. Rows already in the sheet are matched on date, type and amount and skipped.
+- Payees you've categorised before get the same category automatically.
+- Cash spends: add them with **New transaction**.
+
+The PDF reader is [pdf.js](https://mozilla.github.io/pdf.js/) (Apache-2.0), bundled in `vendor/`.
+
 ## One-time setup (about 5 minutes)
 
 ### 1. Create the Google Sheet + backend
